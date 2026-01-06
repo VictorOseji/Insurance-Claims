@@ -1,0 +1,79 @@
+# ============================================================================
+# FILE: config/feature_config.yaml
+# ============================================================================
+
+# Feature engineering configuration
+date_columns:
+  - Accident_Date
+  - FNOL_Date
+  - Settlement_Date
+  - Date_of_Birth
+  - Full_License_Issue_Date
+
+imputation:
+  numeric:
+    columns:
+      - Estimated_Claim_Amount
+      - Ultimate_Claim_Amount
+    strategy: median
+  
+  categorical:
+    columns:
+      - Traffic_Condition
+      - Weather_Condition
+    strategy: most_frequent
+
+feature_engineering:
+  derived_features:
+    - name: FNOL_Delay
+      description: "Days between accident and FNOL reporting"
+      formula: "FNOL_Date - Accident_Date"
+      
+    - name: Settlement_Delay
+      description: "Days between FNOL and settlement"
+      formula: "Settlement_Date - FNOL_Date"
+      
+    - name: Driver_Age
+      description: "Driver age at time of accident"
+      formula: "Accident_Date - Date_of_Birth (in years)"
+      
+    - name: License_Age
+      description: "Years since license issue"
+      formula: "Accident_Date - Full_License_Issue_Date (in years)"
+      
+    - name: Vehicle_Age
+      description: "Vehicle age at time of accident"
+      formula: "Accident_Date year - Vehicle_Year"
+      
+    - name: High_Risk_Driver
+      description: "Flag for high risk age groups"
+      condition: "Driver_Age < 25 or Driver_Age > 70"
+      
+    - name: Inexperienced_Driver
+      description: "Flag for drivers with < 2 years license"
+      condition: "License_Age < 2"
+      
+    - name: Old_Vehicle
+      description: "Flag for vehicles > 10 years old"
+      condition: "Vehicle_Age > 10"
+      
+    - name: Early_FNOL
+      description: "Flag for FNOL reported within 1 day"
+      condition: "FNOL_Delay <= 1"
+      
+categorical_features:
+  - Traffic_Condition
+  - Weather_Condition
+  - High_Risk_Driver
+  - Inexperienced_Driver
+  - Old_Vehicle
+  - Early_FNOL
+
+numeric_features:
+  - FNOL_Delay
+  - Settlement_Delay
+  - Driver_Age
+  - License_Age
+  - Vehicle_Age
+  - Estimated_Claim_Amount
+

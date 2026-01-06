@@ -1,0 +1,42 @@
+# ============================================================================
+# FILE: config/config.yaml
+# ============================================================================
+
+project:
+  name: "insurance-claims-prediction"
+  version: "0.1.0"
+  
+data:
+  raw_path: "data/raw"
+  processed_path: "data/processed"
+  interim_path: "data/interim"
+  claims_file: "data/raw/claims_table.csv"
+  policy_file: "data/raw/policyholder_table.csv"
+  test_size: 0.2
+  random_state: 42
+  
+  # Data quality thresholds
+  missing_threshold: 0.1
+  
+mlflow:
+  tracking_uri: "mlruns"
+  experiment_name: "insurance_claims_prediction"
+  
+pins:
+  board_path: "claims_model_pins_board"
+  board_type: "folder"
+  
+training:
+  cv_folds: 5
+  n_jobs: -1
+  verbose: 1
+  scoring: "neg_mean_squared_error"
+  
+models:
+  enabled:
+    - linear_regression
+    - random_forest
+    - gradient_boosting
+    - xgboost
+  
+  target_variable: "Ultimate_Claim_Amount"
