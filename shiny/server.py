@@ -12,7 +12,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-import shap
+#import shap
 import pickle
 from typing import Dict, List, Optional
 import pins 
@@ -983,9 +983,9 @@ def server(input, output, session):
     v = VetiverModel.from_pin(model_board, "claims_model_best")
     final_model = v.model
 
-    explainer = shap.TreeExplainer(model = final_model.named_steps["model"],
-                                   data = final_model.named_steps["preprocessing"].transform(train_data)
-                                   )
+    # explainer = shap.TreeExplainer(model = final_model.named_steps["model"],
+    #                               data = final_model.named_steps["preprocessing"].transform(train_data)
+    #                               )
 
     @output
     @render_widget
@@ -1150,11 +1150,6 @@ def server(input, output, session):
             Total_Disbursed=('Ultimate_Claim_Amount', 'sum') # Sums the claim amounts
         ).reset_index()
 
-        # Simulated time series data
-        dates = pd.date_range(start="2024-01-01", periods=12, freq="M")
-        volumes = np.random.randint(800, 1500, 12)
-        avg_amounts = np.random.uniform(12000, 18000, 12)
-        
         fig = go.Figure()
         
         fig.add_trace(go.Scatter(
