@@ -13,10 +13,11 @@ import plotly.graph_objects as go
 import plotly.express as px
 from typing import Dict, List, Tuple
 import warnings
-warnings.filterwarnings('ignore')
 import pins
 from vetiver import VetiverModel
 from huggingface_hub import snapshot_download
+
+warnings.filterwarnings('ignore')
 
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:

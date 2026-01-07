@@ -545,9 +545,22 @@ app_ui = ui.page_navbar(
                 12,
                 ui.card(
                     ui.card_header("LIME Explanations (Select Claim)"),
-                    ui.input_select("lime_claim_select", "Select Claim for LIME Analysis", choices={}),
+                    ui.layout_sidebar(
+                    ui.sidebar(
+                        ui.input_select(
+                            "selected_feature", 
+                            "Select Feature for  Analysis", 
+                            choices={},
+                            selected = None
+                        ),
+                        title="Plot Controls",
+                        # Adjust width as needed
+                        width=250 
+                    ),
+                    # The main content area of the card
                     output_widget("lime_explanation_plot")
-                )
+                ),
+                full_screen = True,
             )
         ),
         

@@ -2,7 +2,6 @@
 Server Logic - Advanced FNOL Claims Intelligence System
 Handles all backend processing, predictions, and business logic
 """
-import sys
 from shiny import reactive, render, ui
 from shinywidgets import render_widget
 from sklearn.metrics import r2_score
@@ -17,6 +16,7 @@ import pickle
 from typing import Dict, List, Optional
 import pins 
 from vetiver import VetiverModel
+import effector
 
 
 from global_py import (
@@ -361,7 +361,27 @@ def server(input, output, session):
     # ========================================================================
     # SINGLE CLAIM PREDICTION TAB
     # ========================================================================
-    
+    split_path = data_link + "/interim"
+    data_board = pins.board_folder(split_path, allow_pickle_read=True)
+    model_board = pins.board_folder(model_link, allow_pickle_read=True)
+
+    # board = pins.board_folder(board_name, allow_pickle_read=True)
+    train_data = data_board.pin_read("train_test_data_split")["X_train"]
+    test_data = data_board.pin_read("train_test_data_split")["X_test"]
+    v = VetiverModel.from_pin(model_board, "claims_model_best")
+    final_model = v.model
+
+    # Preprocess the instance for SHAP
+    preprocessed_instance = final_model.named_steps["preprocessing"].transform(test_instance)
+    preprocessed_train = final_model.named_steps["preprocessing"].transform(train_data)
+
+    # To explain in the original scale, use KernelExplainer with a wrapped model that includes the np.expm1 transformation
+    # This provides approximate SHAP values that are additive in the transformed (original) space
+    def wrapped_model(X):
+        return np.expm1(final_model.named_steps["model"].predict(X))
+
+    explainer = shap.KernelExplainer(wrapped_model, preprocessed_train)
+
     @reactive.Effect
     @reactive.event(input.predict_btn)
     def _():
@@ -467,30 +487,42 @@ def server(input, output, session):
     @render_widget
     def shap_plot():
         """Generate SHAP waterfall plot"""
-        pred = current_prediction()
-        if not pred:
-            return None
-        
-        # Simulate SHAP values (replace with actual SHAP computation)
-        features = pred["features"]
-        feature_names = list(features.keys())
-        
-        # Simulated SHAP values
-        shap_values = np.random.uniform(-2000, 2000, len(feature_names))
-        
+        # Compute SHAP values for the instance
+        shap_values = explainer(preprocessed_instance)
+
+        # Extract SHAP components (assuming single output/regression)
+        shap_value = shap_values[0]  # SHAP Explanation object for the instance
+        base_value = shap_value.base_values  # Expected value
+        feature_values = shap_value.values  # SHAP contributions per feature
+
+        # Get feature names from the preprocessor
+        feature_names = final_model.named_steps["preprocessing"].get_feature_names_out()
+
+        # Sort features by absolute SHAP value descending for better visualization
+        indices = np.argsort(-np.abs(feature_values))
+        sorted_feature_names = feature_names[indices]
+        sorted_feature_values = feature_values[indices]
+
+        # Compute final prediction from SHAP (approximates the model prediction due to nonlinear transformation)
+        final_prediction = base_value + sum(sorted_feature_values)
+
+        # Create Plotly Waterfall chart in original scale
         fig = go.Figure(go.Waterfall(
-            name="SHAP Values",
-            orientation="h",
-            measure=["relative"] * len(feature_names),
-            y=feature_names,
-            x=shap_values,
+            name="SHAP Waterfall",
+            orientation="h",  # Horizontal for feature names on y-axis
+            measure=["absolute"] + ["relative"] * len(sorted_feature_values) + ["total"],
+            x=[base_value] + list(sorted_feature_values) + [0],
+            y=["Expected Value"] + list(sorted_feature_names) + ["Prediction"],
+            textposition="outside",
+            text=[f"{base_value:.2f}"] + [f"{v:+.2f}" for v in sorted_feature_values] + [f"{final_prediction:.2f}"],
             connector={"line": {"color": "rgb(63, 63, 63)"}},
         ))
-        
+
         fig.update_layout(
-            title="Feature Impact on Prediction",
-            showlegend=False,
-            height=400
+            title="SHAP Waterfall Plot for Transformed Instance Prediction (Original Scale, Approximate)",
+            yaxis_title="Features",
+            xaxis_title="SHAP Value Contribution (Original Scale)",
+            waterfallgap=0.3,
         )
         
         return fig
@@ -970,43 +1002,56 @@ def server(input, output, session):
     # =============================================================================================================
     # EXPLAINABILITY & COMPLIANCE TAB
     # =============================================================================================================
-    split_path = data_link + "/interim"
-    data_board = pins.board_folder(split_path, allow_pickle_read=True)
-    model_board = pins.board_folder(model_link, allow_pickle_read=True)
-
-    # board = pins.board_folder(board_name, allow_pickle_read=True)
-    train_data = data_board.pin_read("train_test_data_split")["X_train"]
-    test_data = data_board.pin_read("train_test_data_split")["X_test"]
-    v = VetiverModel.from_pin(model_board, "claims_model_best")
-    final_model = v.model
-
-    # explainer = shap.TreeExplainer(model = final_model.named_steps["model"],
-    #                               data = final_model.named_steps["preprocessing"].transform(train_data)
-    #                               )
-
+    
     @output
     @render_widget
     def global_shap_plot():
         """Global SHAP summary plot"""
-        # Simulated global feature importance
-        features = list(FEATURE_BUSINESS_CONTEXT.keys())[:8]
-        importance = np.random.uniform(0.5, 3.0, len(features))
-        importance = sorted(importance, reverse=True)
-        
-        fig = go.Figure(go.Bar(
-            x=importance,
-            y=features,
-            orientation="h",
-            marker_color=APP_CONFIG["primary_color"]
-        ))
-        
-        fig.update_layout(
-            title="Global Feature Importance (SHAP)",
-            xaxis_title="Mean |SHAP Value|",
-            yaxis_title="Feature",
-            height=450
+        # Sample test data
+        test_data_sampled = test_data.sample(n = 2000, random_state = 42, replace = False)
+        # Create the explainer. Usine TreeExplainer for faster computation, seeking global performance only
+        explainer = shap.TreeExplainer(
+            model=final_model.named_steps["model"],
+            data=final_model.named_steps["preprocessing"].transform(train_data)
         )
-        
+
+        # Preprocess the test data 
+        preprocessed_test = final_model.named_steps["preprocessing"].transform(test_data_sampled)
+
+        # Compute SHAP values for the test set
+        shap_values = explainer(preprocessed_test)
+
+        # Compute global feature importances as mean absolute SHAP values (in log scale)
+        importances = np.abs(shap_values.values).mean(axis=0)
+
+        # Get feature names
+        feature_names = final_model.named_steps["preprocessing"].get_feature_names_out()
+
+        # Sort features by importance descending
+        indices = np.argsort(-importances)
+        sorted_feature_names = feature_names[indices]
+        sorted_importances = importances[indices]
+
+        # Create Plotly bar chart for feature importances
+        fig = go.Figure(go.Bar(
+            x=sorted_importances,
+            y=sorted_feature_names,
+            orientation='h',  # Horizontal bars for better label visibility
+            marker_color='rgb(158,202,225)',  # Example color
+            marker_line_color='rgb(8,48,107)',
+            marker_line_width=1.5,
+            opacity=0.6
+        ))
+
+        fig.update_layout(
+            title="SHAP Global Feature Importances (Mean Absolute SHAP Value in Log Scale)",
+            xaxis_title="Mean |SHAP Value| (Importance)",
+            yaxis_title="Features",
+            yaxis={'categoryorder':'total ascending'},  # Sort y-axis by importance
+            height=600,  # Adjust height for many features
+            margin=dict(l=150)  # More space for y-labels
+        )
+
         return fig
     
     @output
@@ -1027,26 +1072,109 @@ def server(input, output, session):
         
         return ui.div(*features_info)
     
+    # Your original fitted tree-based model (predicts in log-space)
+    def predict_original_scale(X):
+        log_pred = final_model.predict(X)
+        return np.expm1(log_pred)  # returns log(y) values
+
+    # Precompute RHALE/ALE effects once (cache for Shiny performance)
+    @reactive.Calc
+    def effect_cache():
+        feature_names = X_train.columns.tolist() # features to analyze
+        # Use a sample for speed (increase if accuracy needed)
+        X_sample = X_train.sample(n=min(3000, len(X_train)), random_state=42)
+        
+        results = {}
+        for feat_idx, feat_name in enumerate(feature_names):
+            try:
+                # For tree models → prefer ALE (non-diff), but RHALE if you have jac (jacobian)
+                # Here we use ALE as base; switch to effector.RHALE if differentiable
+                method = effector.ALE(
+                    data=X_sample.values,               # numpy array
+                    model=lambda x: predict_original_scale,  # black-box callable
+                    axis_limits=np.array([X_sample.min(), X_sample.max()]).T,
+                    nof_instances="all" )
+                
+                # Fit the effect for this feature
+                method.fit(
+                    features=feat_idx,
+                    centering=True,                     # center at 0
+                    points_for_centering=50             # grid points
+                )
+                
+                results[feat_name] = method
+            except Exception as e:
+                print(f"Effector failed for {feat_name}: {e}")
+                results[feat_name] = None
+        
+        return results
+
+    @reactive.Effect
+    @reactive.event(session)
+    def update_dropdown():
+        effects = effect_cache()
+        valid_features = [f for f, m in effects.items() if m is not None]
+        input.selected_feature.set_choices(valid_features)
+
     @output
     @render_widget
     def lime_explanation_plot():
         """LIME explanation for selected claim"""
-        # Simulated LIME values
-        features = ["Estimated_Amount", "Driver_Age", "Vehicle_Age", "FNOL_Delay", "License_Age"]
-        lime_values = np.random.uniform(-1500, 1500, len(features))
-        colors = ["red" if v < 0 else "green" for v in lime_values]
+        feat = input.selected_feature()
+        if not feat:
+            return go.Figure(layout_title_text="Select a feature...")
         
-        fig = go.Figure(go.Bar(
-            x=lime_values,
-            y=features,
-            orientation="h",
-            marker_color=colors
+        method = effect_cache().get(feat)
+        if method is None:
+            return go.Figure(layout_title_text=f"Computation failed for {feat}")
+        
+        # Extract data from fitted method (effector provides .data)
+        effect_data = method.data[0]  # first (only) feature
+        
+        # effect_data is a dict-like with keys like 'xs', 'mean_effect', 'std', etc.
+        xs = effect_data['xs']                        # feature grid values
+        mean_effect = effect_data['mean_effect']      # average ALE/RHALE effect
+        heterogeneity = effect_data.get('std', None)  # or 'bin_std' / heterogeneity measure
+        
+        fig = go.Figure()
+        
+        # Main average effect trace
+        fig.add_trace(go.Scatter(
+            x=xs,
+            y=mean_effect,
+            mode='lines+markers',
+            name='Average Effect (ALE/RHALE)',
+            line=dict(color='royalblue', width=2.5),
+            marker=dict(size=6)
         ))
         
+        # Heterogeneity band (if available)
+        if heterogeneity is not None:
+            lower = mean_effect - heterogeneity
+            upper = mean_effect + heterogeneity
+            
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([xs, xs[::-1]]),
+                y=np.concatenate([upper, lower[::-1]]),
+                fill='toself',
+                fillcolor='rgba(31, 119, 180, 0.18)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='Heterogeneity (± std)',
+                showlegend=True
+            ))
+        
+        # Optional: add rug or points if sample size info available
+        # effector may provide 'nof_points' or similar in data
+        
         fig.update_layout(
-            title="LIME Local Explanation",
-            xaxis_title="Feature Contribution",
-            height=350
+            title=f"Robust & Heterogeneity-aware ALE (RHALE) for '{feat}'",
+            xaxis_title=feat,
+            yaxis_title="Centered Effect",
+            hovermode="x unified",
+            showlegend=True,
+            height=520,
+            margin=dict(l=70, r=40, t=90, b=70),
+            template="plotly_white"
         )
         
         return fig
