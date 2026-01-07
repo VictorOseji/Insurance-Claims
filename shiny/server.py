@@ -16,7 +16,7 @@ import pickle
 from typing import Dict, List, Optional
 import pins 
 from vetiver import VetiverModel
-import effector
+# import effector
 
 
 from global_py import (
