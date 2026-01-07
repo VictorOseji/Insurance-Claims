@@ -372,7 +372,7 @@ def server(input, output, session):
     final_model = v.model
 
     # Preprocess the instance for SHAP
-    preprocessed_instance = final_model.named_steps["preprocessing"].transform(test_instance)
+    preprocessed_test = final_model.named_steps["preprocessing"].transform(test_data)
     preprocessed_train = final_model.named_steps["preprocessing"].transform(train_data)
 
     # To explain in the original scale, use KernelExplainer with a wrapped model that includes the np.expm1 transformation
@@ -488,7 +488,7 @@ def server(input, output, session):
     def shap_plot():
         """Generate SHAP waterfall plot"""
         # Compute SHAP values for the instance
-        shap_values = explainer(preprocessed_instance)
+        shap_values = explainer(preprocessed_test)
 
         # Extract SHAP components (assuming single output/regression)
         shap_value = shap_values[0]  # SHAP Explanation object for the instance
