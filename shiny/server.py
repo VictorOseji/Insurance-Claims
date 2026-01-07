@@ -12,7 +12,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-#import shap
+import shap
 import pickle
 from typing import Dict, List, Optional
 import pins 
@@ -30,6 +30,9 @@ from global_py import (
 )
 
 # Get the path to the project root (one level up from 'shiny')
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from src.utils.config_loader import ConfigLoader
 from src.data.data_loader import InsuranceDataLoader
