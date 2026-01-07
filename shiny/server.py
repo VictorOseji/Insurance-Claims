@@ -967,10 +967,11 @@ def server(input, output, session):
         return ui.p("Upload training data and click 'Retrain Model' to begin", 
                    style="color: #666;")
     
-    # ========================================================================
+    # =============================================================================================================
     # EXPLAINABILITY & COMPLIANCE TAB
-    # ========================================================================
-    data_board = pins.board_folder(data_link, allow_pickle_read=True)
+    # =============================================================================================================
+    split_path = data_link + "/interim"
+    data_board = pins.board_folder(split_path, allow_pickle_read=True)
     model_board = pins.board_folder(model_link, allow_pickle_read=True)
 
     # board = pins.board_folder(board_name, allow_pickle_read=True)
