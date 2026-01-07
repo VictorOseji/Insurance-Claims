@@ -970,7 +970,7 @@ def server(input, output, session):
     # ========================================================================
     # EXPLAINABILITY & COMPLIANCE TAB
     # ========================================================================
-    data_board = pins.board_folder("data/interim", allow_pickle_read=True)
+    data_board = pins.board_folder(data_link, allow_pickle_read=True)
     model_board = pins.board_folder(model_link, allow_pickle_read=True)
 
     # board = pins.board_folder(board_name, allow_pickle_read=True)
