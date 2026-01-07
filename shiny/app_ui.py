@@ -562,6 +562,7 @@ app_ui = ui.page_navbar(
                 ),
                 full_screen = True,
             )
+        )
         ),
         
         ui.row(
