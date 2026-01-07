@@ -3,6 +3,7 @@ Global Configuration and Utility Functions
 Shared across the FNOL Claims Intelligence System
 """
 import os
+from pathlib import Path 
 import tempfile
 import pandas as pd
 import numpy as np
@@ -12,14 +13,13 @@ import plotly.express as px
 from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
 import pins
 from vetiver import VetiverModel
 from huggingface_hub import snapshot_download
 
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # ============================================================================
 # APPLICATION CONFIGURATION
