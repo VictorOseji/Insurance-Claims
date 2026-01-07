@@ -9,6 +9,10 @@ from shiny import App
 from app_ui import app_ui
 from server import server
 
+# Get the path to the directory containing 'shiny_app' (the repo root)
+# root_path = Path(__file__).resolve().parent.parent
+# sys.path.append(str(root_path))
+
 # Define the path to your www directory
 www_dir = Path(__file__).parent / "www"
 

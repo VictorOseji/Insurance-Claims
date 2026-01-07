@@ -30,8 +30,6 @@ from global_py import (
 )
 
 # Get the path to the project root (one level up from 'shiny')
-root_path = Path(__file__).parent.parent
-sys.path.append(str(root_path))
 
 from src.utils.config_loader import ConfigLoader
 from src.data.data_loader import InsuranceDataLoader
