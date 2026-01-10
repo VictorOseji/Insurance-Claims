@@ -47,19 +47,35 @@ feature_engineering:
       
     - name: High_Risk_Driver
       description: "Flag for high risk age groups"
-      condition: "Driver_Age < 25 or Driver_Age > 70"
+      condition: "Driver_Age < 25yrs or Driver_Age > 65yrs"
       
     - name: Inexperienced_Driver
       description: "Flag for drivers with < 2 years license"
-      condition: "License_Age < 2"
+      condition: "License_Age < 2yrs"
       
     - name: Old_Vehicle
       description: "Flag for vehicles > 10 years old"
-      condition: "Vehicle_Age > 10"
+      condition: "Vehicle_Age > 10yrs"
       
     - name: Early_FNOL
       description: "Flag for FNOL reported within 1 day"
-      condition: "FNOL_Delay <= 1"
+      condition: "FNOL_Delay <= 24hrs"
+
+    - name: Estimate_to_Age_Ratio
+      description: "Helps identify potential Total Losses"
+      formula: "Estimated_Claim_Amount / (Vehicle Age + 1)"
+
+    - name: Estimate_Bucket
+      description: "This reduces 'target leakage' by turning Estimate_Claims_Amount into a general bucket"
+      bucket: "('0-1k','1k-5k','5k-10k','10k-20k','20k-50k','50+'')"
+
+    - name: Estimate_Relative_to_Type
+      description: "Is this estimate high compared to other claims of the same type?"
+      formula: "Estimated_Claim_Amount / (Avg Estimate for the CLaim Type)"
+
+    - name: Complexity_Score
+      description: "Is this condition a severe scenario?"
+      formula: "High traffic + Bad weather + High Estimate = High Complexity Claim"
       
 categorical_features:
   - Traffic_Condition
@@ -68,12 +84,15 @@ categorical_features:
   - Inexperienced_Driver
   - Old_Vehicle
   - Early_FNOL
+  - Estimate_Bucket
+  - Claim_Type
+  - Vehicle_Type
+  - Complexity_Score
 
 numeric_features:
   - FNOL_Delay
-  - Settlement_Delay
   - Driver_Age
   - License_Age
   - Vehicle_Age
-  - Estimated_Claim_Amount
-
+  - Estimate_to_Age_Ratio
+  - Estimate_Relative_to_Type

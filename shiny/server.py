@@ -4,7 +4,8 @@ Handles all backend processing, predictions, and business logic
 """
 from shiny import reactive, render, ui
 from shinywidgets import render_widget
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score,root_mean_squared_error,mean_absolute_error,mean_absolute_percentage_error, mean_squared_log_error
+from sklearn import clone
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -26,7 +27,8 @@ from global_py import (
     generate_actionable_insights, create_severity_gauge,
     validate_input_data, calculate_roi_metrics,
     preprocess_claim_data, FEATURE_BUSINESS_CONTEXT,
-    get_modeling_data, run_predictions, load_model
+    get_modeling_data, run_predictions, load_model,
+    plotly_waterfall,plotly_summary,plotly_bar_importance
 )
 
 from src.utils.config_loader import ConfigLoader
@@ -67,7 +69,7 @@ def server(input, output, session):
     current_prediction = reactive.Value(None)
     batch_results = reactive.Value(None)
     
-    model_link = load_model("victoroseji/fnol_claim_model","claims_model_pins_board")
+    model_link = load_model("victoroseji/insurance_claims_model","claims_model_pins_board")
     data_link = load_model("victoroseji/fnol_claims_dataset","data")
     ### =================================================================
     @reactive.Effect
@@ -99,6 +101,8 @@ def server(input, output, session):
             )
             # 6. Load the processed DataFrame into the reactive value
             uploaded_data.set(claims_data)
+
+            app_state()["model_loaded"] = True
             
         except Exception as e:
             print(f"Error loading or processing CSV: {e}")
@@ -180,38 +184,113 @@ def server(input, output, session):
             return f"{len(high_severity):,}"
         return "0"
     
-    @output
-    @render_widget
-    def severity_distribution_plot():
-        """Plot severity distribution"""
-        results = batch_results()
-        if results is None or "Ultimate_Claim_Amount" not in results.columns:
+    @reactive.calc
+    def dashboard_chart_data():
+        df = batch_results()
+        if df is None: 
             return None
         
-        # Categorize by severity
-        results["Severity"] = results["Ultimate_Claim_Amount"].apply(
-            lambda x: calculate_severity_level(x)[0]
+        # 1. Filter by Date Range
+        date_range = input.dashboard_date_range()
+        mask = (df['Accident_Date'] >= pd.to_datetime(date_range[0])) & \
+            (df['Accident_Date'] <= pd.to_datetime(date_range[1]))
+        df_filtered = df.loc[mask].copy()
+        
+        if df_filtered.empty: 
+            return None
+
+        # 2. Create Time Dimension
+        df_filtered['Month'] = df_filtered['Accident_Date'].dt.to_period('M').dt.to_timestamp()
+        df_filtered['Month'] = pd.to_datetime(df_filtered['Month'])
+
+        # 3. Get UI Inputs
+        metric = input.dashboard_metric()
+        threshold = input.severity_threshold()
+
+        # --- IF NO METRIC SELECTED: Return data for Severity Bar Chart ---
+        if metric == "" or metric is None:
+            df_filtered["Severity"] = df_filtered["Ultimate_Claim_Amount"].apply(
+                lambda x: calculate_severity_level(x)[0]
+            )
+            return df_filtered["Severity"].value_counts().reset_index()
+
+        # 4. Group and Calculate Metric
+        if metric == "exposure":
+            res = df_filtered.groupby('Month')['Ultimate_Claim_Amount'].sum()
+        elif metric == "volume":
+            res = df_filtered.groupby('Month')['Policy_ID'].count()
+        elif metric == "severity":
+            # Calculate % of claims > threshold per month
+            total = df_filtered.groupby('Month').size()
+            high_sev = df_filtered[df_filtered['Ultimate_Claim_Amount'] > threshold].groupby('Month').size()
+            res = (high_sev / total * 100).fillna(0)
+        elif metric == "efficiency":
+            # Calculate Mean Absolute Error (MAE) per month
+            df_filtered['error'] = (df_filtered['Ultimate_Claim_Amount'] - df_filtered['Predictions']).abs()
+            res = df_filtered.groupby('Month')['error'].mean()
+        
+        df_res = res.reset_index(name='value')
+        # Calculate 3-Month Moving Average
+        df_res['moving_avg'] = df_res['value'].rolling(window=3, min_periods=1).mean()
+        
+        return df_res
+
+
+    @render_widget
+    def dashboard_metric_plot():
+        data = dashboard_chart_data()
+        if data is None: 
+            return go.Figure()
+
+        metric = input.dashboard_metric()
+        
+         # --- OPTION 1: Default Severity Bar Chart ---
+        if metric == "" or metric is None:
+            fig = px.bar(
+                data, x="Severity", y="count",
+                color="Severity",
+                title="Current Portfolio Severity Distribution",
+                color_discrete_map={
+                    "Low": APP_CONFIG["success_color"],
+                    "Medium": APP_CONFIG["info_color"],
+                    "High": APP_CONFIG["warning_color"],
+                    "Critical": APP_CONFIG["danger_color"]
+                }
+            )
+            fig.update_layout(showlegend=False, height=400)
+            return fig
+
+        # --- OPTION 2: Time-Series Trend Chart ---
+        fig = go.Figure()
+
+        # Convert Month to string format before plotting
+        data["Month_formatted"] = pd.to_datetime(data["Month"]).dt.strftime('%b %Y')
+        
+        # Monthly Bars (The "Actuals")
+        fig.add_trace(go.Bar(
+            x=data["Month_formatted"], y=data["value"],
+            name="Monthly Actual",
+            marker_color="rgba(158, 158, 158, 0.3)"
+        ))
+
+        # Moving Average Line (The "Trend")
+        fig.add_trace(go.Scatter(
+            x=data["Month_formatted"], y=data["moving_avg"],
+            mode='lines', name="3-Month Trend",
+            line=dict(color=APP_CONFIG["primary_color"], width=4, shape='spline')
+        ))
+
+        fig.update_layout(
+            title=f"Time-Series Trend: {metric.title()}",
+            #xaxis = dict(type = "date", tickformat = "%b %Y", dtick = "M1", tickangle = -45),
+            xaxis_title="Month",
+            legend = dict(orientation = "h", yanchor = "top", y = -0.2, xanchor = "center", x = 0.5),
+            hovermode="x unified",
+            #template="plotly_white",
+            height=400
         )
-        
-        severity_counts = results["Severity"].value_counts()
-        
-        fig = px.bar(
-            x=severity_counts.index,
-            y=severity_counts.values,
-            labels={"x": "Severity Level", "y": "Count"},
-            title="Claims by Severity Level",
-            color=severity_counts.index,
-            color_discrete_map={
-                "Low": APP_CONFIG["success_color"],
-                "Medium": APP_CONFIG["info_color"],
-                "High": APP_CONFIG["warning_color"],
-                "Critical": APP_CONFIG["danger_color"]
-            }
-        )
-        
-        fig.update_layout(showlegend=False, height=350)
         return fig
-    
+
     @output
     @render_widget
     def prediction_accuracy_plot():
@@ -248,7 +327,8 @@ def server(input, output, session):
         
         fig.update_layout(height=350)
         return fig
-    
+
+    ## Third row =================================================    
     @output
     @render.ui
     def business_insights_dashboard():
@@ -288,7 +368,7 @@ def server(input, output, session):
         
         # Average claim trend
         avg_claim = metrics.get("average_claim", 0)
-        if avg_claim > 20000:
+        if avg_claim > 15000:
             insights.append(
                 ui.div(
                     {"class": "insight-card alert-medium"},
@@ -319,6 +399,7 @@ def server(input, output, session):
         fig.update_layout(height=350)
         return fig
     
+    ## fourth row ==========================================
     @output
     @render_widget
     def roi_metrics_plot():
@@ -357,7 +438,124 @@ def server(input, output, session):
         )
         
         return fig
+
+    @reactive.calc
+    def detailed_savings_calculations():
+        df = batch_results()
+        if df is None: return None
+        
+        # 1. Get dynamic inputs from the card's sidebar
+        # We divide by 100 to convert percentage to decimal
+        cost_of_capital = input.cap_cost() / 100 
+        labor_rate_per_hour = input.labor_rate()
+        leakage_rate = input.leakage_rate() / 100
+        time_saved = input.mins_saved() / 60            # 60 secs = 1mins
+
+        # 2. Capital Release 
+        over_reserved = (df['Recommended_Reserve'] - df['Ultimate_Claim_Amount']).clip(lower=0).sum()
+        cap_release = over_reserved * cost_of_capital
+
+        # 3. Automation Gains (Triage)
+        # Assume 15 minutes (0.25 hours) per claim saved 
+        automation_gains = len(df) * time_saved * labor_rate_per_hour
+        
+        # 4. Leakage Mitigation (Accuracy)
+        # If the ML model is more accurate, we assume it prevents 10% of the "Error Gap" 
+        # from being paid out as wasted leakage.
+        human_error = (df['Ultimate_Claim_Amount'] - df['Recommended_Reserve']).abs().sum()
+        model_error = (df['Ultimate_Claim_Amount'] - df['Predictions']).abs().sum()
+        leakage_prevented = (human_error - model_error) * leakage_rate if human_error > model_error else 0
+        
+        # 5. FNOL Delay Impact (Cost Avoidance)
+        # Claims reported > 48 hours late often cost 10% more. 
+        # We estimate savings by flagging these for "Fast Intervention".
+        late_claims_total = df[df['FNOL_Delay'] > 48]['Ultimate_Claim_Amount'].sum()
+        delay_mitigation = late_claims_total * 0.02 # Assuming 2% cost reduction through speed
+        
+        return {
+            "Cap. Release": cap_release,
+            "Leakage": leakage_prevented,
+            "Automation": automation_gains,
+            "Delay Mitig.": delay_mitigation
+        }
     
+        @render.text
+        def total_savings_val():
+            data = detailed_savings_calculations()
+            total = sum(data.values())
+            return f"£{total:,.0f}"
+
+        @render.text
+        def automation_roi_val():
+            data = detailed_savings_calculations()
+            # Example ROI: Automation Savings / Estimated Monthly Model Cost (£2k)
+            roi = (data["Automation"] / 2000) * 100
+            return f"{roi:.1f}%"
+
+    @render_widget
+    def savings_waterfall_plot():
+        data = detailed_savings_calculations()
+        if data is None: return go.Figure()
+
+        categories = list(data.keys())
+        values = list(data.values())
+        
+        fig = go.Figure(go.Waterfall(
+            name="ROI", orientation="v",
+            measure=["relative"] * len(categories) + ["total"],
+            x=categories + ["Total Savings"],
+            textposition="outside",
+            text=[f"£{v:,.0f}" for v in values] + [f"£{sum(values):,.0f}"],
+            y=values + [sum(values)],
+            connector={"line": {"color": "rgb(63, 63, 63)"}},
+            increasing={"marker": {"color": APP_CONFIG["success_color"]}},
+            totals={"marker": {"color": APP_CONFIG["primary_color"]}}
+        ))
+
+        fig.update_layout(
+            #template="ployly_white",
+            legend = dict(orientation = "h", yanchor = "top", y = -0.2, xanchor = "center", x = 0.5),
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=400
+        )
+        return fig
+    
+    @render.table
+    def savings_summary_table():
+        data = detailed_savings_calculations()
+        if data is None:
+            return pd.DataFrame()
+        
+        # Create the structure for the table
+        summary_data = [
+            {
+                "Category": "Capital Release", 
+                "Driver": "Reserving Accuracy", 
+                "Impact": f"£{data['Cap. Release']:,.2f}",
+                "Logic": "5% RoC on over-reserved capital"
+            },
+            {
+                "Category": "Leakage Mitigation", 
+                "Driver": "ML Model Lift", 
+                "Impact": f"£{data['Leakage']:,.2f}",
+                "Logic": "10% capture of Human vs Model error gap"
+            },
+            {
+                "Category": "Automation Gains", 
+                "Driver": "Severity Triage", 
+                "Impact": f"£{data['Automation']:,.2f}",
+                "Logic": "£15 labor saving per automated claim"
+            },
+            {
+                "Category": "Delay Mitigation", 
+                "Driver": "FNOL Response", 
+                "Impact": f"£{data['Delay Mitig.']:,.2f}",
+                "Logic": "2% reduction in late-report penalties"
+            }
+        ]
+        
+        return pd.DataFrame(summary_data)
+
     # ========================================================================
     # SINGLE CLAIM PREDICTION TAB
     # ========================================================================
@@ -368,33 +566,46 @@ def server(input, output, session):
     # board = pins.board_folder(board_name, allow_pickle_read=True)
     train_data = data_board.pin_read("train_test_data_split")["X_train"]
     test_data = data_board.pin_read("train_test_data_split")["X_test"]
+    test_actual = data_board.pin_read("train_test_data_split")["Y_test"]
     v = VetiverModel.from_pin(model_board, "claims_model_best")
     final_model = v.model
 
-    # Preprocess the instance for SHAP
-    preprocessed_instance = final_model.named_steps["preprocessing"].transform(test_instance)
-    preprocessed_train = final_model.named_steps["preprocessing"].transform(train_data)
+    def predict_fn(X):
+        pred = final_model.predict(X)
+        return np.expm1(pred)
+
+    # Extract fitted tree
+    tree_model = final_model.regressor_.named_steps["model"]
+
+    # Rebuild preprocessing deterministically
+    preprocessor = clone( final_model.regressor.named_steps["preprocessing"] )
+    X_train_pp = preprocessor.fit_transform(train_data)
+    #X_test_pp  = preprocessor.transform(test_data_sampled)
+
+
+    sample_train = shap.sample(train_data,10000)
+    explainer = shap.TreeExplainer( tree_model, data=X_train_pp )
+
+
+    # Preprocess the instance for SHAP { Alternate method}
+    #preprocessed_test = final_model.regressor_.named_steps["preprocessing"].transform(test_data)
+    #preprocessed_train = final_model.regressor_.named_steps["preprocessing"].transform(train_data)
 
     # To explain in the original scale, use KernelExplainer with a wrapped model that includes the np.expm1 transformation
     # This provides approximate SHAP values that are additive in the transformed (original) space
-    def wrapped_model(X):
-        return np.expm1(final_model.named_steps["model"].predict(X))
 
-    explainer = shap.KernelExplainer(wrapped_model, preprocessed_train)
-
-    @reactive.Effect
+    @reactive.calc
     @reactive.event(input.predict_btn)
-    def _():
-        """Generate prediction for single claim"""
-        # 1. Select one data instance as a baseline
+    def processed_single_row():
+        """Generates and transforms the row based on UI inputs"""
         master_df = uploaded_data.get()
         if master_df is None:
-            return
+            return None
             
-        # Take the first row (or a specific row) to use as a template
-        # We use .iloc[[0]] to keep it as a DataFrame
+        # 1. Create template
         single_row = master_df.iloc[[0]].copy()
-        # 2. Update the template with user-collected features
+        
+        # 2. Map features from UI
         features = {
             "Estimated_Claim_Amount": input.estimated_amount(),
             "Driver_Age": input.driver_age(),
@@ -409,41 +620,65 @@ def server(input, output, session):
         for key, value in features.items():
             single_row[key] = value
 
-        # 3. Calculate Derived Metrics (Recalculate logic on the new inputs)
+        # 3. Logic-based feature engineering
         single_row['High_Risk_Driver'] = np.where((single_row['Driver_Age'] < 25) | (single_row['Driver_Age'] > 70), 'Yes', 'No')
         single_row['Inexperienced_Driver'] = np.where(single_row['License_Age'] < 2, 'Yes', 'No')
         single_row['Old_Vehicle'] = np.where(single_row['Vehicle_Age'] > 10, 'Yes', 'No')
-        single_row['Early_FNOL'] = np.where(single_row['FNOL_Delay'] <= 1, 'Yes', 'No')
-        
-        # Use the function we created earlier to transform this single row
+        single_row['Early_FNOL'] = np.where(single_row['FNOL_Delay_Hours'] <= 1, 'Yes', 'No')
+        single_row['Estimate_to_Age_Ratio'] = single_row['Estimated_Claim_Amount'] / (single_row['Vehicle_Age'] + 1)
+        single_row['Estimate_Bucket'] = pd.cut( single_row['Estimated_Claim_Amount'], bins=[0,1000,5000,10000,20000,50000,np.inf], 
+                                        labels=["0-1k","1k-5k","5k-10k","10k-20k","20k-50k","50+"], right = True )
+        single_row['Type_Avg_Estimate'] = single_row.groupby('Claim_Type')['Estimated_Claim_Amount'].transform('mean')
+        single_row['Estimate_Relative_to_Type'] = single_row['Estimated_Claim_Amount'] / single_row['Type_Avg_Estimate']
+        single_row['Complexity_Score'] = np.where( single_row['Traffic_Condition'].isin(['High','Severe']) & (single_row['Weather_Condition'] == 'Stormy'), "Yes", "No")
+
         transformed_row = get_modeling_data(single_row, numeric_features, categorical_features)
-            
-        # 3. Get Predictions
-        single_preds = run_predictions(transformed_row, model_link,"claims_model_best")
-        single_preds = np.expm1(single_preds)
         
-        # Assuming calculate_severity_level returns (label, color)
-        severity, severity_color = calculate_severity_level(single_preds[0])
+        # 4. Final Transformation
+        return {
+            "transformed": transformed_row,
+            "raw_features": features
+        }
+
+
+    @reactive.effect
+    def execute_prediction():
+        """Watches the transformed row and runs the model"""
+        # Trigger the calculation above
+        transformed_row = processed_single_row()["transformed"]
+        features = processed_single_row()["raw_features"]
+
+        if transformed_row is None:
+            return
+
+        # 1. Run Model
+        single_preds = run_predictions(transformed_row, model_link, "claims_model_best")
+        pred_amount = np.expm1(single_preds[0])
         
+        # 2. Get Metadata
+        severity, severity_color = calculate_severity_level(pred_amount)
+        
+        # 3. Construct Result
         prediction_result = {
             "claim_id": input.claim_id(),
             "policy_id": input.policy_id(),
-            "predicted_amount": single_preds[0],
+            "predicted_amount": pred_amount,
             "features": features,
             "severity": severity,
             "severity_color": severity_color,
-            "reserve_recommendation": calculate_reserve_recommendation(single_preds[0]),
-            "insights": generate_actionable_insights(single_preds[0], features),
+            "reserve_recommendation": calculate_reserve_recommendation(pred_amount),
+            "insights": generate_actionable_insights(pred_amount, features),
             "timestamp": datetime.now()
         }
         
+        # 4. Update Reactive Values
         current_prediction.set(prediction_result)
         
-        # Update history
+        # 5. Update History
         state = app_state()
         state["predictions_history"].append(prediction_result)
         app_state.set(state)
-    
+   
     @output
     @render.text
     def prediction_amount():
@@ -488,42 +723,26 @@ def server(input, output, session):
     def shap_plot():
         """Generate SHAP waterfall plot"""
         # Compute SHAP values for the instance
-        shap_values = explainer(preprocessed_instance)
+        transformed_row = processed_single_row()["transformed"]
+        explainer = shap.TreeExplainer(tree_model, X_train_pp)
 
+        # Preprocess the single prediction data 
+        preprocessed_single = preprocessor.transform(transformed_row)
+
+        # Compute SHAP values for the test set
+        shap_exp = explainer.shap_values(preprocessed_single)
+        
         # Extract SHAP components (assuming single output/regression)
-        shap_value = shap_values[0]  # SHAP Explanation object for the instance
-        base_value = shap_value.base_values  # Expected value
-        feature_values = shap_value.values  # SHAP contributions per feature
+        #shap_values = shap_exp[0].values  # SHAP Explanation object for the instance
+        #base_value = shap_exp[0].base_values  # Expected value
+        #feature_values = shap_exp.data  # SHAP contributions per feature
 
         # Get feature names from the preprocessor
-        feature_names = final_model.named_steps["preprocessing"].get_feature_names_out()
+        feature_names = preprocessor.get_feature_names_out()
+        feature_names = [name.replace("num__", "").replace("cat__", "") for name in feature_names]
 
-        # Sort features by absolute SHAP value descending for better visualization
-        indices = np.argsort(-np.abs(feature_values))
-        sorted_feature_names = feature_names[indices]
-        sorted_feature_values = feature_values[indices]
 
-        # Compute final prediction from SHAP (approximates the model prediction due to nonlinear transformation)
-        final_prediction = base_value + sum(sorted_feature_values)
-
-        # Create Plotly Waterfall chart in original scale
-        fig = go.Figure(go.Waterfall(
-            name="SHAP Waterfall",
-            orientation="h",  # Horizontal for feature names on y-axis
-            measure=["absolute"] + ["relative"] * len(sorted_feature_values) + ["total"],
-            x=[base_value] + list(sorted_feature_values) + [0],
-            y=["Expected Value"] + list(sorted_feature_names) + ["Prediction"],
-            textposition="outside",
-            text=[f"{base_value:.2f}"] + [f"{v:+.2f}" for v in sorted_feature_values] + [f"{final_prediction:.2f}"],
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-        ))
-
-        fig.update_layout(
-            title="SHAP Waterfall Plot for Transformed Instance Prediction (Original Scale, Approximate)",
-            yaxis_title="Features",
-            xaxis_title="SHAP Value Contribution (Original Scale)",
-            waterfallgap=0.3,
-        )
+        fig = plotly_waterfall(shap_exp, feature_names, explainer.expected_value, 0)
         
         return fig
     
@@ -724,17 +943,17 @@ def server(input, output, session):
             df = modeling_data()
             
             # 1. Connect to the board (replace with your board type, e.g., board_s3)
-            board = pins.board_folder("model_pins_board", allow_pickle_read=True)
+            board = pins.board_folder(model_link, allow_pickle_read=True)
 
             # 2. Retrieve the model by name
-            v = VetiverModel.from_pin(board, "random_forest")
+            v = VetiverModel.from_pin(board, "claims_model_best")
 
             # 3. Apply prediction
             pred = v.model.predict(df)
             
             # 4. Add predictions to dataframe
             results_df = df.copy()
-            results_df["Predictions"] = pred
+            results_df["Predictions"] = np.expm1(pred)
             results_df["Severity"] = results_df["Predictions"].apply(
                 lambda x: calculate_severity_level(x)[0]
             )
@@ -766,12 +985,12 @@ def server(input, output, session):
         
         # Select key columns for display
         display_cols = ["Claim_ID", "Policy_ID", "High_Risk_Driver","Inexperienced_Driver","Estimated_Claim_Amount", 
-                       "Ultimate_Claim_Amount", "Severity", "Recommended_Reserve"]
+                       "Ultimate_Claim_Amount", "Predictions","Severity", "Recommended_Reserve"]
         
         display_df = results[[col for col in display_cols if col in results.columns]].copy()
         
         # Format currency columns
-        for col in ["Estimated_Claim_Amount", "Ultimate_Claim_Amount", "Recommended_Reserve"]:
+        for col in ["Estimated_Claim_Amount", "Ultimate_Claim_Amount", "Predictions","Recommended_Reserve"]:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda x: format_currency(x) if pd.notna(x) else "")
         
@@ -824,7 +1043,7 @@ def server(input, output, session):
         fig = px.histogram(
             results,
             x="Ultimate_Claim_Amount",
-            nbins=30,
+            nbins=40,
             title="Distribution of Predicted Amounts",
             labels={"Ultimate_Claim_Amount": "Predicted Amount (£)"}
         )
@@ -861,11 +1080,6 @@ def server(input, output, session):
                 type="message",
                 duration=3
             )
-            
-            # Simulate model loading
-            # In production: Use vetiver to load from HuggingFace
-            # from vetiver import VetiverModel
-            # model = VetiverModel.from_pin(board, pin_name)
             
             state = app_state()
             state["model_loaded"] = True
@@ -916,16 +1130,25 @@ def server(input, output, session):
     @render.ui
     def model_performance_metrics():
         """Display model performance metrics"""
+        df = test_data
         state = app_state()
         if not state["model_loaded"]:
             return ui.p("Load a model to view performance metrics")
+
+        pred = final_model.predict(df)
         
-        # Simulated metrics
+        # calculate metrics
+        r2_score,root_mean_squared_error,mean_absolute_error,mean_absolute_percentage_error
+        r2 = r2_score(test_actual, pred)
+        rmsle = np.sqrt(mean_squared_log_error(test_actual, pred))
+        mae = mean_absolute_error(test_actual, pred)
+        mape = mean_absolute_percentage_error(test_actual, pred)*100
+
         metrics = {
-            "R² Score": 0.8432,
-            "RMSE": 8460.83,
-            "MAE": 4183.94,
-            "MAPE": 12.3
+            "R² Score": r2,
+            "RMSLE": rmsle,
+            "MAE": mae,
+            "MAPE": mape
         }
         
         metric_cards = []
@@ -938,7 +1161,7 @@ def server(input, output, session):
             elif "%" in metric_name or metric_name == "MAPE":
                 display_val = f"{metric_value:.1f}%"
             else:
-                display_val = f"{metric_value:,.2f}"
+                display_val = f"{metric_value:,.3f}"
             
             metric_cards.append(
                 ui.div(
@@ -957,9 +1180,9 @@ def server(input, output, session):
     @render_widget
     def model_comparison_plot():
         """Compare different models"""
-        models = ["Gradient Boosting", "Random Forest", "XGBoost"]
-        r2_scores = [0.8432, 0.8423, 0.8292]
-        rmse_values = [8460.83, 8486.05, 8830.47]
+        models = ["Gradient Boosting", "Random Forest", "XGBoost", "Elastinet"]
+        r2_scores = [0.9353, 0.9352, 0.9356,0.8791]
+        rmsle_values = [0.2843, 0.2843, 0.2834,0.3886]
         
         fig = go.Figure()
         
@@ -973,9 +1196,9 @@ def server(input, output, session):
         ))
         
         fig.add_trace(go.Bar(
-            name="RMSE",
+            name="RMSLE",
             x=models,
-            y=rmse_values,
+            y=rmsle_values,
             yaxis="y2",
             offsetgroup=2,
             marker_color=APP_CONFIG["warning_color"]
@@ -985,7 +1208,7 @@ def server(input, output, session):
             title="Model Performance Comparison",
             xaxis=dict(title="Model"),
             yaxis=dict(title="R² Score", side="left"),
-            yaxis2=dict(title="RMSE", side="right", overlaying="y"),
+            yaxis2=dict(title="RMSLE", side="right", overlaying="y"),
             barmode="group",
             height=400
         )
@@ -1007,16 +1230,14 @@ def server(input, output, session):
     @render_widget
     def global_shap_plot():
         """Global SHAP summary plot"""
+        def predict_fn(X):
+            return final_model.predict(X)
         # Sample test data
-        test_data_sampled = test_data.sample(n = 2000, random_state = 42, replace = False)
+        test_data_sampled = test_data.sample(n = 3000, random_state = 42, replace = False)
         # Create the explainer. Usine TreeExplainer for faster computation, seeking global performance only
-        explainer = shap.TreeExplainer(
-            model=final_model.named_steps["model"],
-            data=final_model.named_steps["preprocessing"].transform(train_data)
-        )
-
+        
         # Preprocess the test data 
-        preprocessed_test = final_model.named_steps["preprocessing"].transform(test_data_sampled)
+        preprocessed_test = preprocessor.transform(test_data_sampled)
 
         # Compute SHAP values for the test set
         shap_values = explainer(preprocessed_test)
@@ -1025,7 +1246,8 @@ def server(input, output, session):
         importances = np.abs(shap_values.values).mean(axis=0)
 
         # Get feature names
-        feature_names = final_model.named_steps["preprocessing"].get_feature_names_out()
+        feature_names = preprocessor.get_feature_names_out()
+        feature_names = [name.replace("num__", "").replace("cat__", "") for name in feature_names]
 
         # Sort features by importance descending
         indices = np.argsort(-importances)
@@ -1071,18 +1293,18 @@ def server(input, output, session):
             )
         
         return ui.div(*features_info)
-    
-    # Your original fitted tree-based model (predicts in log-space)
-    def predict_original_scale(X):
-        log_pred = final_model.predict(X)
-        return np.expm1(log_pred)  # returns log(y) values
 
     # Precompute RHALE/ALE effects once (cache for Shiny performance)
     @reactive.Calc
     def effect_cache():
         feature_names = X_train.columns.tolist() # features to analyze
         # Use a sample for speed (increase if accuracy needed)
-        X_sample = X_train.sample(n=min(3000, len(X_train)), random_state=42)
+        X_sample = train_data.sample(n=min(10000, len(train_data)), random_state=42)
+
+        # Your original fitted tree-based model (predicts in log-space)
+        def predict_original_scale(X):
+                log_pred = final_model.predict(X)
+                return np.expm1(log_pred)  # returns log(y) values
         
         results = {}
         for feat_idx, feat_name in enumerate(feature_names):
@@ -1110,7 +1332,7 @@ def server(input, output, session):
         return results
 
     @reactive.Effect
-    @reactive.event(session)
+    @reactive.event(input.selected_feature)
     def update_dropdown():
         effects = effect_cache()
         valid_features = [f for f, m in effects.items() if m is not None]
@@ -1214,7 +1436,7 @@ def server(input, output, session):
     @render.ui
     def kpi_prediction_accuracy():
         """KPI: Prediction accuracy"""
-        result =uploaded_data()
+        result =batch_results()
         # Calculate correlation and square it
         r_squared = r2_score(result['Ultimate_Claim_Amount'],
                             result['Predictions'])
@@ -1229,7 +1451,7 @@ def server(input, output, session):
     @render.ui
     def kpi_processing_time():
         """KPI: Average processing time"""
-        result = uploaded_data()
+        result = batch_results()
         process_diff = result['Settlement_Date'] - result['Accident_Date']
         process_diff = process_diff.dt.days
         mean_time = process_diff.mean()
@@ -1259,72 +1481,297 @@ def server(input, output, session):
             ui.div("High", {"class": "metric-value"})
         )
     
+
+    @reactive.calc
+    def filtered_analytics_data():
+        result = batch_results()
+        if result is None:
+            return None
+        
+        # Work on a copy
+        df = result.copy()
+        dim = input.analytics_dimension()
+        
+        #if not pd.api.types.is_datetime64_any_dtype(df['Accident_Date']):
+        #    df['Accident_Date'] = pd.to_datetime(df['Accident_Date'])
+
+        # --- Case 1: Time Trend (Volume) ---
+        if dim == "Volume":
+            df['Month'] = df['Accident_Date'].dt.to_period('M').dt.to_timestamp()
+            return df.groupby('Month').agg(
+                Volume=('Policy_ID', 'nunique'),
+                Total_Amount=('Ultimate_Claim_Amount', 'sum')
+            ).reset_index()
+
+        # --- Case 2: Numeric Binning (Driver & Vehicle Age) ---
+        elif dim in ["driver_age", "vehicle_age"]:
+            col = "Driver_Age" if dim == "driver_age" else "Vehicle_Age"
+            
+            if dim == "driver_age":
+                bins = [0, 25, 35, 45, 55, 65, 100]
+                labels = ["<25", "25-34", "35-44", "45-54", "55-64", "65+"]
+            else: # vehicle_age
+                bins = [0, 3, 7, 12, 20, 100]
+                labels = ["New (0-3)", "Modern (4-7)", "Mid (8-12)", "Old (13-20)", "Vintage (20+)"]
+                
+            df[col] = pd.cut(df[col], bins=bins, labels=labels, right=False)
+            target_col = col
+
+        # --- Case 3: Categorical Dimensions ---
+        else:
+            col_map = {
+                "claim_type": "Claim_Type",
+                "weather": "Weather_Condition",
+                "severity": "Severity"
+            }
+            target_col = col_map.get(dim, dim)
+
+        # Final Aggregation for Bar Charts
+        summary = df.groupby(target_col, observed=True).agg(
+            Volume=('Policy_ID', 'count'),
+            Total_Amount=('Ultimate_Claim_Amount', 'sum')
+        ).reset_index()
+        
+        summary['Avg_Amount'] = summary['Total_Amount'] / summary['Volume']
+        return summary
+
     @output
     @render_widget
     def claims_trend_plot():
         """Claims trend over time"""
-        result = uploaded_data()
+        data = filtered_analytics_data()
+        if data is None:
+            return go.Figure()
 
-        # Create a 'Month' column (Period format 'YYYY-MM' is best for sorting)
-        result['Month'] = result['Accident_Date'].dt.to_period('M')
-        result['Month'] = result['Month'].dt.to_timestamp()
-
-        # Group and calculate Volume and Total Amount
-        monthly_summary = result.groupby('Month').agg(
-            Policy_Volume=('Policy_ID', 'nunique'),          # Counts unique policies
-            Total_Disbursed=('Ultimate_Claim_Amount', 'sum') # Sums the claim amounts
-        ).reset_index()
-
+        dim = input.analytics_dimension()
         fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=monthly_summary["Month"],
-            y=monthly_summary["Policy_Volume"],
-            name="Claim Volume",
-            yaxis="y",
-            line=dict(color=APP_CONFIG["primary_color"])
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=monthly_summary["Month"],
-            y=monthly_summary["Total_Disbursed"],
-            name="Avg Claim Amount",
-            yaxis="y2",
-            line=dict(color=APP_CONFIG["secondary_color"])
-        ))
-        
-        fig.update_layout(
-            title="Claims Volume and Average Amount Trends",
-            xaxis=dict(title="Month"),
-            yaxis=dict(title="Volume", side="left"),
-            yaxis2=dict(title="Amount (£)", side="right", overlaying="y"),
-            height=400
-        )
+
+        if dim == "Volume":
+            # Convert Month to string format before plotting
+            data["Month_formatted"] = pd.to_datetime(data["Month"]).dt.strftime('%b %Y')
+
+            # LINE CHART for Time Trends
+            fig.add_trace(go.Scatter(
+                x=data["Month_formatted"], y=data["Volume"],
+                name="Claim Volume", yaxis="y",
+                line=dict(color=APP_CONFIG["primary_color"], width=3)
+            ))
+            fig.add_trace(go.Scatter(
+                x=data["Month_formatted"], y=data["Total_Amount"],
+                name="Total Amount", yaxis="y2",
+                line=dict(color=APP_CONFIG["secondary_color"], dash='dash')
+            ))
+            title = "Monthly Claims Volume and Total Disbursed"
+
+            fig.update_layout(
+                title=title,
+                xaxis=dict(title=dim.replace('_', ' ').title(), tickformat = "%b %Y", tickangle = -45
+                    #type = "date",  dtick = "M1"
+                    ),
+                yaxis=dict(title="Volume", side="left", showgrid=False),
+                yaxis2=dict(title="Amount (£)", side="right", overlaying="y", showgrid=True),
+                hovermode="x unified",
+                legend = dict(orientation = "h", yanchor = "top", y = -0.5, xanchor = "center", x = 0.5),
+                height=450
+            )
+        else:
+            # BAR CHART for Categories/Ages
+            # Use the first column as the X axis (the dimension)
+            x_col = data.columns[0] 
+            
+            fig.add_trace(go.Bar(
+                x=data[x_col], y=data["Volume"],
+                name="Volume", yaxis="y",
+                marker_color=APP_CONFIG["primary_color"],
+                opacity=0.7
+            ))
+            fig.add_trace(go.Scatter(
+                x=data[x_col], y=data["Avg_Amount"],
+                name="Avg Claim Amount", yaxis="y2",
+                line=dict(color=APP_CONFIG["secondary_color"], width=4),
+                mode="lines+markers"
+            ))
+            title = f"Claims Analysis by {x_col.replace('_', ' ')}"
+
+            fig.update_layout(
+                title=title,
+                xaxis=dict(title=dim.replace('_', ' ').title() ),
+                yaxis=dict(title="Volume", side="left", showgrid=False),
+                yaxis2=dict(title="Amount (£)", side="right", overlaying="y", showgrid=True),
+                hovermode="x unified",
+                legend = dict(orientation = "h", yanchor = "top", y = -0.5, xanchor = "center", x = 0.5),
+                height=450,
+                template="plotly_white"
+            )
         
         return fig
     
+    ###################################################################
+    @reactive.calc
+    def reserve_adequacy_summary():
+        df_calc = uploaded_data()
+        if df_calc is None:
+            return None
+        # Generate quarter year variable
+        df_calc["Quarter_Year"] = df_calc["Accident_Date"].dt.to_period("Q").astype(str)
+
+        # 1. Get the selected dimension from the UI
+        dim = input.analytics_dimension()
+        threshold = int(input.analytics_severity_threshold())
+        
+        # 2. Map UI keys to actual Column Names (same as your plot logic)
+        col_map = {
+            "claim_type": "Claim_Type",
+            "weather": "Weather_Condition",
+            "severity": "Severity",
+            "driver_age": "Driver_Age",
+            "vehicle_age": "Vehicle_Age",
+            "Volume": "Quarter_Year" # For Volume, we'll default to Accident_Date
+        }
+        target_col = col_map.get(dim, "Claim_Type")
+
+        # 3. Handle Binning for Age if that dimension is selected
+        if dim == "driver_age":
+            df_calc[target_col] = pd.cut(df_calc[target_col], bins=[0, 25, 35, 45, 55, 65, 100], 
+                                        labels=["<25", "25-34", "35-44", "45-54", "55-64", "65+"])
+        elif dim == "vehicle_age":
+            df_calc[target_col] = pd.cut(df_calc[target_col], bins=[0, 3, 7, 12, 20, 100], 
+                                        labels=["0-3", "4-7", "8-12", "13-20", "20+"])
+
+        # 1. Calculate Core Financial Deltas
+        # Positive Gap = Under-reserved (Deficiency)
+        # Negative Gap = Over-reserved (Redundancy)
+        # 4. Perform Financial Aggregation
+        df_calc['Reserve_Gap'] = df_calc['Ultimate_Claim_Amount'] - df_calc['Recommended_Reserve']
+        df_calc['Human_Error'] = (df_calc['Ultimate_Claim_Amount'] - df_calc['Estimated_Claim_Amount']).abs()
+        df_calc['Model_Error'] = (df_calc['Ultimate_Claim_Amount'] - df_calc['Predictions']).abs()
+        
+        summary = df_calc.groupby(target_col, observed=True).agg(
+            Total_Claims=('Policy_ID', 'nunique'),
+            Avg_Ultimate=('Ultimate_Claim_Amount', 'mean'),
+            Mean_Reserve_Gap=('Reserve_Gap', 'mean'),
+            Avg_Human_Error=('Human_Error', 'mean'),
+            Avg_Model_Error=('Model_Error', 'mean')
+        ).reset_index()
+        
+        # 3. Calculate "Model Lift" 
+        # (How much better the model is than the human reserve)
+        summary['Model_Lift_%'] = (
+            (summary['Avg_Human_Error'] - summary['Avg_Model_Error']) / 
+            summary['Avg_Human_Error'] * 100
+        ).round(2)
+        
+        # Calculate % Gap for more nuanced status
+        # (Gap / Total Predicted)
+        summary['Gap_Pct'] = (summary['Mean_Reserve_Gap'] / summary['Avg_Ultimate']) * 100
+
+        # Define the 4 Business Conditions
+        conditions = [
+            # Case 1: Gap exceeds the high-severity threshold (Deficit)
+            (summary['Mean_Reserve_Gap'] > threshold),
+
+            # Case 2: Gap is positive but below the high-severity threshold
+            (summary['Mean_Reserve_Gap'] > 0) & (summary['Mean_Reserve_Gap'] <= threshold),
+
+            # Case 3: Gap is significantly negative (Excessive capital tied up)
+            (summary['Mean_Reserve_Gap'] < -(threshold / 2)),
+            
+            # Case 4: Gap is slightly negative or zero (The "Sweet Spot")
+            (summary['Mean_Reserve_Gap'] <= 0) & (summary['Mean_Reserve_Gap'] >= -(threshold / 2))
+            ]
+        
+        choices = [
+            "🔴Critical Deficit", 
+            "🟡Under-Reserved", 
+            "🔵Excessive Surplus", 
+            "🟢Adequate"
+        ]
+        
+        summary['Status'] = np.select(conditions, choices, default="⚪Pending")
+        
+        return summary
+    
+    @render.text
+    def dynamic_table_title():
+        dim = input.analytics_dimension().replace("_", " ").title()
+        return f"Reserve Adequacy Analysis by {dim}"
+
+    @output
+    @render.data_frame
+    def reserve_adequacy_table():
+        summary = reserve_adequacy_summary()
+        if summary is None:
+            return None
+        
+        # Formatting for display
+        df = summary.copy()
+        
+        # Function to add arrows/colors to numeric strings
+        def format_gap(val):
+            color = "🔴" if val > 0 else "🟢"
+            return f"{color} £{val:,.0f}"
+
+        def format_error(human, model):
+            # Compare errors and add a "better" indicator
+            icon = "⭐" if model < human else ""
+            return icon
+
+        # Apply formatting
+        df['Mean_Reserve_Gap'] = df['Mean_Reserve_Gap'].apply(format_gap)
+        df['Avg_Human_Error'] = df['Avg_Human_Error'].apply(lambda x: f"£{x:,.0f}")
+        df['Avg_Model_Error'] = df['Avg_Model_Error'].apply(lambda x: f"£{x:,.0f}")
+        df['Avg_Ultimate'] = df['Avg_Ultimate'].apply(lambda x: f"£{x:,.0f}")
+        df['Total_Claims'] = df['Total_Claims'].apply(lambda x: f"{x:,.0f}")
+        
+        # Percentage Formatting
+        df['Model_Lift_%'] = df['Model_Lift_%'].apply(lambda x: f"{x}%")
+        df['Gap_Pct'] = df['Gap_Pct'].apply(lambda x: f"{x:,.2f}%")
+
+        # Clean up column names for the UI
+        df.columns = [col.replace("_", " ") for col in df.columns]
+        
+        return render.DataTable(df, filters=False)
+
+  
     @output
     @render_widget
-    def reserve_adequacy_plot():
-        """Reserve adequacy analysis"""
-        categories = ["Adequate", "Under-Reserved", "Over-Reserved"]
-        percentages = [75, 15, 10]
-        
-        fig = px.pie(
-            values=percentages,
-            names=categories,
-            title="Reserve Adequacy Distribution",
-            color=categories,
-            color_discrete_map={
-                "Adequate": APP_CONFIG["success_color"],
-                "Under-Reserved": APP_CONFIG["danger_color"],
-                "Over-Reserved": APP_CONFIG["warning_color"]
-            }
+    def adequacy_scatter_plot():
+        df = batch_results()
+        df = df.sample(n = 15000)
+
+        if df is None:
+            return go.Figure()
+
+        fig = go.Figure()
+
+        # Add 45-degree Reference Line (Perfect Accuracy)
+        max_val = max(df['Ultimate_Claim_Amount'].max(), df['Predictions'].max())
+        fig.add_trace(go.Scatter(
+            x=[0, max_val], y=[0, max_val],
+            mode='lines', name='Perfect Estimate',
+            line=dict(color='black', dash='dash')
+        ))
+
+        # Add Prediction Data
+        fig.add_trace(go.Scatter(
+            x=df['Ultimate_Claim_Amount'],
+            y=df['Predictions'],
+            mode='markers',
+            name='Model Predictions',
+            marker=dict(color=APP_CONFIG["primary_color"], opacity=0.6)
+        ))
+
+        fig.update_layout(
+            title="Reserve Adequacy: Ultimate vs. Predicted",
+            legend = dict(orientation = "h", yanchor = "top", y = -0.2, xanchor = "center", x = 0.5),
+            xaxis_title="Actual Ultimate Amount (£)",
+            yaxis_title="Model Predicted Amount (£)",
+            template="plotly_white"
         )
-        
-        fig.update_layout(height=400)
+
         return fig
-    
+
+
     @output
     @render.ui
     def strategic_insights():

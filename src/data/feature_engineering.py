@@ -83,9 +83,9 @@ class FeatureEngineer:
         """Create all derived features"""
         logger.info("Creating derived features...")
         
-        # FNOL_Delay: Days between accident and FNOL reporting
+        # FNOL_Delay: Hours between accident and FNOL reporting
         if 'FNOL_Date' in df.columns and 'Accident_Date' in df.columns:
-            df['FNOL_Delay'] = (df['FNOL_Date'] - df['Accident_Date']).dt.days
+            df['FNOL_Delay'] = (df['FNOL_Date'] - df['Accident_Date']) / pd.Timedelta(hours=1)
             logger.info("Created FNOL_Delay feature")
         
         # Driver_Age: Driver age at time of accident (in years)
@@ -96,17 +96,18 @@ class FeatureEngineer:
         # License_Age: Years since license issue
         if 'Accident_Date' in df.columns and 'Full_License_Issue_Date' in df.columns:
             df['License_Age'] = (df['Accident_Date'] - df['Full_License_Issue_Date']).dt.days // 365
+            df['License_Age'] = df['License_Age'].abs()
             logger.info("Created License_Age feature")
         
         # Vehicle_Age: Vehicle age at time of accident
         if 'Accident_Date' in df.columns and 'Vehicle_Year' in df.columns:
-            df['Vehicle_Age'] = df['Accident_Date'].dt.year - df['Vehicle_Year']
+            df['Vehicle_Age'] = (df['Accident_Date'].dt.year - df['Vehicle_Year']).abs()
             logger.info("Created Vehicle_Age feature")
         
         # High_Risk_Driver: Flag for high risk age groups (< 25 or > 70)
         if 'Driver_Age' in df.columns:
             df['High_Risk_Driver'] = np.where(
-                (df['Driver_Age'] < 25) | (df['Driver_Age'] > 70),
+                (df['Driver_Age'] < 25) | (df['Driver_Age'] > 65),
                 'Yes',
                 'No'
             )
@@ -133,11 +134,39 @@ class FeatureEngineer:
         # Early_FNOL: Flag for FNOL reported within 1 day
         if 'FNOL_Delay' in df.columns:
             df['Early_FNOL'] = np.where(
-                df['FNOL_Delay'] <= 1,
+                df['FNOL_Delay'] <= 24,
                 'Yes',
                 'No'
             )
             logger.info("Created Early_FNOL feature")
+        
+        # Estimated_to_Age_Ratio: Derive Estimated Amount Ratios
+        if 'Estimated_Claim_Amount' in df.columns:
+            df['Estimate_to_Age_Ratio'] = df['Estimated_Claim_Amount'] / (df['Vehicle_Age'] + 1)
+            logger.info("Created Estimate_to_Age_Ratio feature")
+
+        # Estimate_Bucket: Categorize the Estimate
+        if 'Estimated_Claim_Amount' in df.columns:
+            df['Estimate_Bucket'] = pd.cut(
+                df['Estimated_Claim_Amount'],
+                bins=[0,1000,5000,10000,20000,50000,np.inf], 
+                labels=["0-1k","1k-5k","5k-10k","10k-20k","20k-50k","50+"],
+                right = True
+            )
+            logger.info("Created Estimate_Bucket feature")
+
+        # Estimate_Relative_to_Type: Group-based Normalization
+        if 'Estimated_Claim_Amount' in df.columns:
+            df['Type_Avg_Estimate'] = df.groupby('Claim_Type')['Estimated_Claim_Amount'].transform('mean')
+            df['Estimate_Relative_to_Type'] = df['Estimated_Claim_Amount'] / df['Type_Avg_Estimate']
+            logger.info("Created Estimate_Relative_to_Type feature")
+
+        # Severity_Flag: Interaction Feature
+        if 'Estimated_Claim_Amount' in df.columns:
+            df['Complexity_Score'] = np.where(
+                df['Traffic_Condition'].isin(['High','Severe']) & 
+                (df['Weather_Condition'] == 'Stormy'), "Yes", "No")
+            logger.info("Created Estimate_Relative_to_Type feature")
         
         return df
     
@@ -151,7 +180,11 @@ class FeatureEngineer:
             'High_Risk_Driver',
             'Inexperienced_Driver',
             'Old_Vehicle',
-            'Early_FNOL'
+            'Early_FNOL',
+            'Estimate_to_Age_Ratio',
+            'Estimate_Bucket',
+            'Estimate_Relative_to_Type',
+            'Complexity_Score'
         ]
         
         if include_original:

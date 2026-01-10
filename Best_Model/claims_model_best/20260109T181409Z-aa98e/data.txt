@@ -1,0 +1,15 @@
+api_version: 1
+created: 20260109T181409Z
+description: The best model created after parameter tuning
+file: claims_model_best.joblib
+file_size: 2287332
+pin_hash: aa98ee00a23b3d36
+title: 'claims_model_best: a pinned TransformedTargetRegressor object'
+type: joblib
+user:
+  mlflow_run_id: e6ab3db479014d89be61baf059c749e7
+  model_type: Xgboost
+  selected_at: '2026-01-09T18:14:09+00:00'
+  selected_by: mlflow_r2_max
+  selection_metric: r2
+  source_pin: xgboost

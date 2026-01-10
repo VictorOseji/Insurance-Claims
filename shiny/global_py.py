@@ -42,8 +42,8 @@ APP_CONFIG = {
 
 # Model configuration
 MODEL_CONFIG = {
-    "huggingface_repo": "your-username/fnol-claims-model",
-    "pin_board_url": "model_pins_board",
+    "huggingface_repo": "victoroseji/insurance-claims-model",
+    "pin_board_url": "claims_model_pins_board",
     "available_models": ["gradient_boosting", "random_forest", "xgboost","linear_regression"],
     "target_variable": "Ultimate_Claim_Amount",
     "prediction_confidence_threshold": 0.75
@@ -375,6 +375,132 @@ def run_predictions(transformed_array, model_path, model_name):
     # 2. Predict
     return v.model.predict(transformed_array)
 
+    # 1. WATERFALL PLOT (for single prediction) in Plotly
+def plotly_waterfall(shap_values, feature_names, base_value, index=0):
+    """Create a Plotly waterfall chart for SHAP values"""
+    
+    # Get SHAP values for the specific prediction
+    shap_vals = shap_values[index]
+
+    # Filter out features with zero SHAP values
+    non_zero_mask = shap_vals != 0
+    non_zero_indices = np.where(non_zero_mask)[0]
+    
+    # If all SHAP values are zero, return a message
+    if len(non_zero_indices) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No features contributed to this prediction (all SHAP values are zero)",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14)
+        )
+        fig.update_layout(
+            title=f"SHAP Waterfall Plot - Prediction {index}",
+            height=400
+        )
+        return fig
+    
+    # Get non-zero SHAP values
+    filtered_shap_vals = shap_vals[non_zero_indices]
+    
+    # Sort by absolute SHAP value
+    idx = np.argsort(np.abs(filtered_shap_vals))[::-1]
+    
+    # Prepare data
+    vals = shap_vals[idx]
+    names = [feature_names[i] for i in idx]
+    
+    # Create waterfall
+    fig = go.Figure(go.Waterfall(
+        name="SHAP",
+        orientation="v",
+        measure=["relative"] * len(vals) + ["total"],
+        x=names + ["Prediction"],
+        y=list(vals) + [sum(vals)],
+        base=base_value,
+        connector={"line": {"color": "rgb(63, 63, 63)"}},
+        decreasing={"marker": {"color": "#ff0051"}},
+        increasing={"marker": {"color": "#008bfb"}},
+        totals={"marker": {"color": "#00cc96"}}
+    ))
+    
+    fig.update_layout(
+        title=f"SHAP Waterfall Plot - Prediction {index}",
+        xaxis_title="Features",
+        yaxis_title="SHAP Value (impact on model output)",
+        showlegend=False,
+        height=600
+    )
+    
+    return fig
+
+# 2. SUMMARY PLOT (beeswarm) in Plotly
+def plotly_summary(shap_values, features, max_display=20):
+    """Create a Plotly summary plot (similar to SHAP beeswarm)"""
+    
+    feature_names = features.columns
+    
+    # Calculate mean absolute SHAP values for sorting
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    idx = np.argsort(mean_abs_shap)[::-1][:max_display]
+    
+    # Create dataframe for plotting
+    plot_data = []
+    for i in idx:
+        for j in range(len(shap_values)):
+            plot_data.append({
+                'feature': feature_names[i],
+                'shap_value': shap_values[j, i],
+                'feature_value': features.iloc[j, i]
+            })
+    
+    df_plot = pd.DataFrame(plot_data)
+    
+    # Create plot
+    fig = px.strip(
+        df_plot,
+        x='shap_value',
+        y='feature',
+        color='feature_value',
+        color_continuous_scale='RdBu_r',
+        title='SHAP Summary Plot',
+        labels={'shap_value': 'SHAP value (impact on model output)',
+                'feature': 'Feature',
+                'feature_value': 'Feature Value'}
+    )
+    
+    fig.update_traces(marker=dict(size=4, opacity=0.6))
+    fig.update_layout(height=max(400, max_display * 25), yaxis={'categoryorder': 'total ascending'})
+    
+    return fig
+
+# 3. BAR PLOT (mean absolute SHAP) in Plotly
+def plotly_bar_importance(shap_values, feature_names, max_display=20):
+    """Create a Plotly bar chart for feature importance"""
+    
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    
+    # Sort and select top features
+    idx = np.argsort(mean_abs_shap)[::-1][:max_display]
+    
+    df = pd.DataFrame({
+        'feature': feature_names[idx],
+        'importance': mean_abs_shap[idx]
+    })
+    
+    fig = px.bar(
+        df,
+        x='importance',
+        y='feature',
+        orientation='h',
+        title='Feature Importance (mean |SHAP value|)',
+        labels={'importance': 'Mean |SHAP value|', 'feature': 'Feature'}
+    )
+    
+    fig.update_layout(height=max(400, max_display * 25), yaxis={'categoryorder': 'total ascending'})
+    
+    return fig
 # ============================================================================
 # DATA PREPROCESSING FUNCTIONS
 # ============================================================================

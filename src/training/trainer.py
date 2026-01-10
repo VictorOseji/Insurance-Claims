@@ -2,9 +2,10 @@
 # FILE: src/training/trainer.py
 # ============================================================================
 """Main training orchestration"""
+from sklearn.compose._target import TransformedTargetRegressor
 import mlflow
-# import numpy as np
-# from typing import Dict, Any
+import numpy as np
+from typing import Dict, Any
 import logging
 from ..models.elastic_net import ElasticNetModel
 from ..models.random_forest import RandomForestModel
@@ -48,19 +49,22 @@ class ModelTrainer:
             # ---------------------------
             base_model = ElasticNetModel.build_model(self.config)
             pipeline = build_training_pipeline( preprocessor=preprocessor, model=base_model )
-
+            log_model = TransformedTargetRegressor(
+                regressor = pipeline,
+                func = np.log1p,
+                inverse_func = np.expm1
+            )
             # ---------------------------
             # 2. Hyperparameter tuning
             # ---------------------------
             param_grid = self.model_params["elastic_net"]["param_grid"]
 
             best_pipeline, best_params = self.tuner.tune(
-                pipeline,
+                log_model,
                 param_grid,
                 X_train,
                 y_train
             )
-
             # ---------------------------
             # 3. Evaluate
             # ---------------------------
@@ -121,6 +125,11 @@ class ModelTrainer:
             # ---------------------------
             base_model = RandomForestModel.build_model(self.config)
             pipeline = build_training_pipeline( preprocessor=preprocessor, model=base_model )
+            log_model = TransformedTargetRegressor(
+                regressor = pipeline,
+                func = np.log1p,
+                inverse_func = np.expm1
+            )
 
             # ---------------------------
             # 2. Hyperparameter tuning
@@ -128,7 +137,7 @@ class ModelTrainer:
             param_grid = self.model_params["random_forest"]["param_grid"]
 
             best_pipeline, best_params = self.tuner.tune(
-                pipeline,
+                log_model,
                 param_grid,
                 X_train,
                 y_train
@@ -195,6 +204,11 @@ class ModelTrainer:
             # ---------------------------
             base_model = GradientBoostingModel.build_model(self.config)
             pipeline = build_training_pipeline( preprocessor=preprocessor, model=base_model )
+            log_model = TransformedTargetRegressor(
+                regressor = pipeline,
+                func = np.log1p,
+                inverse_func = np.expm1
+            )
 
             # ---------------------------
             # 2. Hyperparameter tuning
@@ -202,7 +216,7 @@ class ModelTrainer:
             param_grid = self.model_params["gradient_boosting"]["param_grid"]
 
             best_pipeline, best_params = self.tuner.tune(
-                pipeline,
+                log_model,
                 param_grid,
                 X_train,
                 y_train
@@ -269,6 +283,11 @@ class ModelTrainer:
             # ---------------------------
             base_model = XGBoostModel.build_model(self.config)
             pipeline = build_training_pipeline( preprocessor=preprocessor, model=base_model )
+            log_model = TransformedTargetRegressor(
+                regressor = pipeline,
+                func = np.log1p,
+                inverse_func = np.expm1
+            )
 
             # ---------------------------
             # 2. Hyperparameter tuning
@@ -276,7 +295,7 @@ class ModelTrainer:
             param_grid = self.model_params["xgboost"]["param_grid"]
 
             best_pipeline, best_params = self.tuner.tune(
-                pipeline,
+                log_model,
                 param_grid,
                 X_train,
                 y_train

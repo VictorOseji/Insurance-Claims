@@ -8,6 +8,7 @@ from shiny import ui
 from global_py import APP_CONFIG, MODEL_CONFIG
 import shinyswatch
 from shinywidgets import output_widget
+from faicons import icon_svg
 
 # ============================================================================
 # UI LAYOUT
@@ -129,6 +130,7 @@ app_ui = ui.page_navbar(
                     "dashboard_metric",
                     "Key Metric View",
                     choices={
+                        "": "Claims by Severity",
                         "exposure": "Total Exposure",
                         "volume": "Claim Volume",
                         "severity": "Severity Distribution",
@@ -140,6 +142,8 @@ app_ui = ui.page_navbar(
                     "Analysis Period",
                     start="2024-01-01"
                 ),
+                ui.input_slider("severity_threshold", "Severity Threshold (£)", 
+                                  min=0, max=100000, value=15000, step=1000),
                 ui.hr(),
                 ui.div(
                     {"class": "metric-card"},
@@ -201,7 +205,7 @@ app_ui = ui.page_navbar(
                         6,
                         ui.card(
                             ui.card_header("Claim Severity Distribution"),
-                            output_widget("severity_distribution_plot")
+                            output_widget("dashboard_metric_plot")
                         )
                     ),
                     ui.column(
@@ -215,27 +219,88 @@ app_ui = ui.page_navbar(
                 
                 ui.row(
                     ui.column(
-                        12,
+                        5,
                         ui.card(
                             ui.card_header("Business Intelligence Insights"),
                             ui.output_ui("business_insights_dashboard")
+                        )
+                    ),
+                    ui.column(
+                        7,
+                        ui.card(
+                            ui.card_header("Claims by Type"),
+                            output_widget("claims_by_type_plot")
                         )
                     )
                 ),
                 
                 ui.row(
                     ui.column(
-                        6,
-                        ui.card(
-                            ui.card_header("Claims by Type"),
-                            output_widget("claims_by_type_plot")
+                        2,
+                        ui.layout_column_wrap(
+                            # Top Row: Summary Cards
+                            ui.value_box(
+                                "Total Projected Savings",
+                                ui.output_text("total_savings_val"),
+                                showcase=icon_svg("piggy-bank"),
+                                theme="success"
+                            ),
+                            ui.value_box(
+                                "Capital Efficiency Ratio",
+                                ui.output_text("capital_ratio_val"),
+                                showcase=icon_svg("chart-pie"),
+                                theme="primary"
+                            ),
+                            fill=False,
+                            width = 1
                         )
                     ),
                     ui.column(
-                        6,
-                        ui.card(
-                            ui.card_header("ROI Metrics"),
-                            output_widget("roi_metrics_plot")
+                        10,
+                        ui.layout_columns(
+                            # Middle Row: The Waterfall and the Table
+                            ui.navset_card_pill(
+                                # TAB 1: The Waterfall Chart
+                                ui.nav_panel(
+                                    "Savings",
+                                    output_widget("savings_waterfall_plot"),
+                                ),
+                                # TAB 2: The Bar Chart
+                                ui.nav_panel(
+                                    "Category",
+                                    output_widget("roi_metrics_plot"),
+                                ),
+                                
+                                sidebar = ui.sidebar(
+                                    ui.accordion(
+                                        ui.accordion_panel(
+                                            "Labor & Time",
+                                            ui.input_slider("labor_rate", "Hourly Rate (£)", 20, 100, 45),
+                                            ui.input_numeric("mins_saved", "Mins Saved/Claim", 15)
+                                        ),
+                                        ui.accordion_panel(
+                                            "Financial Ratios",
+                                            ui.input_slider("cap_cost", "Cost of Capital (%)", 1, 15, 5),
+                                            ui.input_slider("leakage_rate", "Leakage Capture (%)", 0, 20, 10)
+                                        ),
+                                        open=False # Keep collapsed to save space
+                                    ),
+                                    title="ROI Assumptions"
+                                ),
+
+                                # Optional: Add a common footer or title to the card
+                                header=ui.h5("ROI & Financial Impact Analysis", class_="m-0"),
+                                footer=ui.div(
+                                    "Metrics are calculated based on model lift and operational benchmarks.",
+                                    class_="small text-muted"
+                                )
+                            ),
+                            ui.card(
+                                ui.card_header("Financial Methodology"),
+                                ui.output_table("savings_summary_table"),
+                                ui.card_footer("Values based on current analysis period and standard actuarial assumptions.")
+                            ),
+                            col_widths=[7, 5]
                         )
                     )
                 )
@@ -289,7 +354,7 @@ app_ui = ui.page_navbar(
                     choices=["Light", "Moderate", "Heavy"]
                 ),
                 
-                ui.input_numeric("fnol_delay_hours", "FNOL Delay (hours)", value=2, min=0, max=720),
+                ui.input_numeric("fnol_delay_hours", "FNOL Delay (Days)", value=2, min=0, max=720),
                 
                 ui.hr(),
                 ui.input_action_button("predict_btn", "Generate Prediction", class_="btn-admiral", style="width: 100%;"),
@@ -344,7 +409,8 @@ app_ui = ui.page_navbar(
                         6,
                         ui.card(
                             ui.card_header("Feature Importance (SHAP)"),
-                            output_widget("shap_plot")
+                            output_widget("shap_plot"),
+                            full_screen=True
                         )
                     )
                 ),
@@ -454,11 +520,12 @@ app_ui = ui.page_navbar(
                         ui.input_select(
                             "selected_model",
                             "Active Model",
-                            choices=MODEL_CONFIG["available_models"]
+                            choices=MODEL_CONFIG["available_models"],
+                            selected="random_forest"
                         ),
                         ui.hr(),
                         ui.input_text("hf_repo", "HuggingFace Repository", value=MODEL_CONFIG["huggingface_repo"]),
-                        ui.input_text("pin_name", "Vetiver Pin Name", placeholder="gradient_boosting"),
+                        ui.input_text("pin_name", "Vetiver Pin Name", placeholder="claims_model_best"),
                         ui.hr(),
                         ui.input_action_button("load_model_btn", "Load Model from HuggingFace", class_="btn-admiral", style="width: 100%;"),
                         ui.hr(),
@@ -592,6 +659,7 @@ app_ui = ui.page_navbar(
                         "analytics_dimension",
                         "Analysis Dimension",
                         choices={
+                            "Volume": "Historical Trend",
                             "claim_type": "By Claim Type",
                             "driver_age": "By Driver Age",
                             "vehicle_age": "By Vehicle Age",
@@ -618,6 +686,13 @@ app_ui = ui.page_navbar(
         ),
         
         ui.row(
+            ui.tags.style("""
+                        .compact-text { font-size: 0.8rem; }
+                        /* Reduce padding even more for a truly dense look */
+                        table.dataTable tbody td, table.dataTable thead th {
+                            padding: 2px 5px !important;
+                        }
+                    """),
             ui.column(
                 6,
                 ui.card(
@@ -628,20 +703,41 @@ app_ui = ui.page_navbar(
             ui.column(
                 6,
                 ui.card(
-                    ui.card_header("Reserve Adequacy Analysis"),
-                    output_widget("reserve_adequacy_plot")
+                    ui.card_header(ui.div(
+                    {"class": "d-flex justify-content-between align-items-center"},
+                    ui.output_table("dynamic_table_title"),
+                    ui.popover(
+                        icon_svg("circle-info"),
+                        "Total Reserve Gap = Actual Ultimate - Recommended Reserve. "
+                        "Model Lift shows how much more accurate the ML model is compared to human estimates.",
+                        title="Metric Definitions",
+                        placement="left"
+                            )
+                        )
+                        ),
+                    ui.output_data_frame("reserve_adequacy_table"),
+                    ui.card_footer(
+                        "Note: A positive Reserve Gap indicates a deficiency (under-reserved)."
+                    )
                 )
             )
         ),
         
         ui.row(
             ui.column(
-                12,
+                6,
                 ui.card(
                     ui.card_header("Strategic Insights & Recommendations"),
                     ui.output_ui("strategic_insights")
                 )
+            ),
+        ui.column(
+            6,
+            ui.card(
+                ui.card_header("Actual Vs Predicted Claims"),
+                output_widget("adequacy_scatter_plot")
             )
+        )
         )
     ),
     
