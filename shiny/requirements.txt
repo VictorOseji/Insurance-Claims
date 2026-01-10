@@ -22,11 +22,14 @@ pins>=0.8.0
 # Explainability
 shap>=0.44.0
 lime>=0.2.0
+effector>=0.1.0
 
 # Visualization
 plotly>=5.18.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
+faicons>=0.2.0
+
 
 # HuggingFace Integration
 huggingface-hub>=0.20.0
